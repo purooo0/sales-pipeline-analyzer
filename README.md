@@ -125,35 +125,9 @@ The app works best when the uploaded Excel file contains these business fields o
 
 If a required field is missing, the related chart or table is skipped and the app shows a warning.
 
-## GitHub Topics
-
-Suggested topics for the GitHub repository:
-
-```text
-streamlit
-python
-pandas
-data-analysis
-sales-analytics
-sales-pipeline
-excel-automation
-excel-parser
-dashboard
-business-intelligence
-data-visualization
-matplotlib
-seaborn
-openpyxl
-portfolio-project
-```
-
 ## Notes
 
 - Large Excel files may take longer to process.
 - Uploaded data is cached during the Streamlit session for faster iteration.
 - For best results, date columns should use valid Excel date or ISO date formats.
 - This project uses dummy/sample data only; do not commit confidential internship or company data.
-
-## License
-
-Internal/private use. Update the license section if this repository is made public.
