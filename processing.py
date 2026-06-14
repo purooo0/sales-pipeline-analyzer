@@ -13,13 +13,46 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from typing import Dict, List, Optional, Tuple
 
-sns.set(style="whitegrid")
-# Theme colors (single accent to keep visuals consistent and professional)
+# Theme colors
 TELKOMSEL_RED = "#e60000"
 NEUTRAL_GRAY = "#d9d9d9"
+CHART_TEXT = "#1f2937"
+CHART_MUTED = "#64748b"
+CHART_GRID = "#e5e7eb"
+CHART_BG = "#ffffff"
+CHART_PALETTE = [
+    TELKOMSEL_RED,
+    "#334155",
+    "#0f766e",
+    "#d97706",
+    "#2563eb",
+    "#7c3aed",
+    "#64748b",
+]
+YEAR_PALETTE = {
+    2023: "#64748b",
+    2024: TELKOMSEL_RED,
+    2025: "#0f766e",
+    2026: "#2563eb",
+}
 
-# Consistent minimal palette: Telkomsel Red primary
-sns.set_palette([TELKOMSEL_RED])
+sns.set_theme(
+    style="whitegrid",
+    rc={
+        "axes.facecolor": CHART_BG,
+        "figure.facecolor": CHART_BG,
+        "axes.edgecolor": CHART_GRID,
+        "axes.labelcolor": CHART_TEXT,
+        "axes.titlecolor": CHART_TEXT,
+        "xtick.color": CHART_MUTED,
+        "ytick.color": CHART_TEXT,
+        "grid.color": CHART_GRID,
+        "grid.linestyle": "-",
+        "grid.linewidth": 0.8,
+        "font.family": "DejaVu Sans",
+    },
+)
+sns.set_palette(CHART_PALETTE)
 
 # ---- Canonical columns used internally ----
 CANONICAL_COLS = [
@@ -140,19 +173,22 @@ def auto_map_columns(found_cols: List[str]) -> Dict[str, Optional[str]]:
         Mapping from canonical name to source column (or None if not found).
     """
     mapping: Dict[str, Optional[str]] = {c: None for c in CANONICAL_COLS}
+    used_sources = set()
     normalized = {c.lower().strip(): c for c in found_cols}
     # exact name first
     for canon in CANONICAL_COLS:
         key = canon.lower()
-        if key in normalized:
+        if key in normalized and normalized[key] not in used_sources:
             mapping[canon] = normalized[key]
+            used_sources.add(normalized[key])
     # alias pass
     for canon, aliases in ALIASES.items():
         if mapping.get(canon):
             continue
         for alias in aliases:
-            if alias.lower() in normalized:
+            if alias.lower() in normalized and normalized[alias.lower()] not in used_sources:
                 mapping[canon] = normalized[alias.lower()]
+                used_sources.add(normalized[alias.lower()])
                 break
     return mapping
 
@@ -200,6 +236,92 @@ def idr_label(value: float) -> str:
     else:
         return f"{value:,.0f}"
 
+
+def _style_axis(ax, title: str, xlabel: str = "", ylabel: str = "", grid_axis: str = "x") -> None:
+    """Apply a consistent, presentation-ready style to a Matplotlib axis."""
+    ax.set_title(title, loc="left", fontsize=15, fontweight="700", pad=16, color=CHART_TEXT)
+    ax.set_xlabel(xlabel, fontsize=10, color=CHART_MUTED, labelpad=10)
+    ax.set_ylabel(ylabel, fontsize=10, color=CHART_MUTED, labelpad=10)
+    ax.grid(True, axis=grid_axis, alpha=0.9)
+    ax.grid(False, axis=("y" if grid_axis == "x" else "x"))
+    for spine in ["top", "right"]:
+        ax.spines[spine].set_visible(False)
+    ax.spines["left"].set_color(CHART_GRID)
+    ax.spines["bottom"].set_color(CHART_GRID)
+    ax.tick_params(axis="both", labelsize=9)
+
+
+def _bar_label_offset(values: pd.Series) -> float:
+    """Return a small data-relative offset for bar labels."""
+    max_value = pd.Series(values).dropna().max()
+    if pd.isna(max_value) or max_value == 0:
+        return 0.5
+    return float(max_value) * 0.015
+
+
+def _palette(n: int) -> List[str]:
+    """Return enough colors for n categories."""
+    if n <= 0:
+        return []
+    repeats = int(np.ceil(n / len(CHART_PALETTE)))
+    return (CHART_PALETTE * repeats)[:n]
+
+
+def _add_horizontal_bar_labels(ax, values: pd.Series, formatter=None) -> None:
+    """Add clean labels to horizontal bars."""
+    offset = _bar_label_offset(values)
+    for patch, value in zip(ax.patches, values.tolist()):
+        if pd.isna(value):
+            continue
+        label = formatter(value) if formatter else f"{value:.1f}"
+        ax.text(
+            patch.get_width() + offset,
+            patch.get_y() + patch.get_height() / 2,
+            label,
+            va="center",
+            ha="left",
+            fontsize=9,
+            color=CHART_TEXT,
+        )
+
+
+def _donut_chart(values: pd.Series, labels: pd.Series, title: str, center_label: str) -> plt.Figure:
+    """Render a polished donut chart with a compact legend."""
+    fig, ax = plt.subplots(figsize=(7.2, 5.6))
+    values = values.fillna(0)
+    total = values.sum()
+    if total <= 0:
+        ax.text(0.5, 0.5, "No data", ha="center", va="center", color=CHART_MUTED)
+        ax.axis("off")
+        return fig
+
+    colors = _palette(len(values))
+    wedges, _ = ax.pie(
+        values,
+        startangle=90,
+        counterclock=False,
+        colors=colors,
+        wedgeprops={"width": 0.42, "edgecolor": "white", "linewidth": 2},
+    )
+    ax.text(0, 0.05, idr_label(total), ha="center", va="center", fontsize=18, fontweight="700", color=CHART_TEXT)
+    ax.text(0, -0.13, center_label, ha="center", va="center", fontsize=9, color=CHART_MUTED)
+    legend_labels = [
+        f"{label}: {value / total * 100:.1f}% ({idr_label(value)})"
+        for label, value in zip(labels.tolist(), values.tolist())
+    ]
+    ax.legend(
+        wedges,
+        legend_labels,
+        loc="center left",
+        bbox_to_anchor=(1.02, 0.5),
+        frameon=False,
+        fontsize=9,
+    )
+    ax.set_title(title, loc="left", fontsize=15, fontweight="700", pad=14, color=CHART_TEXT)
+    ax.axis("equal")
+    fig.tight_layout()
+    return fig
+
 # ---- Preprocess shared (normalize columns and types) ----
 def preprocess(df: pd.DataFrame, mapping: Dict[str, Optional[str]]) -> pd.DataFrame:
     """Normalize and enrich the dataset according to the provided column mapping.
@@ -211,7 +333,10 @@ def preprocess(df: pd.DataFrame, mapping: Dict[str, Optional[str]]) -> pd.DataFr
     """
     out = df.copy()
     # rename to canonical if mapped
-    rename_map = {v: k for k, v in mapping.items() if v}
+    rename_map = {}
+    for canonical, source in mapping.items():
+        if source and source not in rename_map:
+            rename_map[source] = canonical
     out = out.rename(columns=rename_map)
 
     # lower/strip industry
@@ -296,24 +421,18 @@ def run_bagian1(
         cv_summary = pd.DataFrame({"CV_Total": cv_total, "CV_Won": cv_won}).fillna(0).reset_index()
         cv_summary["CV_Total_Bn"] = (cv_summary["CV_Total"] / 1e9).round(2)
         cv_summary["CV_Won_Bn"] = (cv_summary["CV_Won"] / 1e9).round(2)
-        # neutral greys to avoid too many colors while keeping categories distinguishable
-        colors = plt.cm.Greys(np.linspace(0.4, 0.9, len(cv_summary)))
-
-        # All stages pie
-        fig1, ax1 = plt.subplots(figsize=(6, 6))
-        ax1.pie(cv_summary["CV_Total"], labels=[f"{pt} ({val:.2f}Bn)" for pt, val in zip(cv_summary["Product Type"], cv_summary["CV_Total_Bn"])],
-                autopct="%1.1f%%", startangle=140, colors=colors)
-        ax1.set_title("CV by Product Type (All Stage)")
-        ax1.axis("equal")
-        figs["pie_all"] = fig1
-
-        # Won only pie
-        fig2, ax2 = plt.subplots(figsize=(6, 6))
-        ax2.pie(cv_summary["CV_Won"], labels=[f"{pt} ({val:.2f}Bn)" for pt, val in zip(cv_summary["Product Type"], cv_summary["CV_Won_Bn"])],
-                autopct="%1.1f%%", startangle=140, colors=colors)
-        ax2.set_title("CV by Product Type (Won Only)")
-        ax2.axis("equal")
-        figs["pie_won"] = fig2
+        figs["pie_all"] = _donut_chart(
+            cv_summary["CV_Total"],
+            cv_summary["Product Type"],
+            "Contract Value by Product Type",
+            "All Stage",
+        )
+        figs["pie_won"] = _donut_chart(
+            cv_summary["CV_Won"],
+            cv_summary["Product Type"],
+            "Won Contract Value by Product Type",
+            "Won Only",
+        )
     else:
         res.setdefault("warnings", []).append("Lewati Pie Chart: membutuhkan Pilar→Product Type dan Schedule Amount.")
 
@@ -326,24 +445,55 @@ def run_bagian1(
         merged_q["CV_Total_Bn"] = (merged_q["Schedule Amount_Total"] / 1e9).round(2)
         merged_q["CV_Won_Bn"] = (merged_q["Schedule Amount_Won"] / 1e9).round(2)
 
-        fig3, ax = plt.subplots(figsize=(16, 7))
+        fig3, ax = plt.subplots(figsize=(14, 6.5))
         bar_width = 0.35
         x = np.arange(len(merged_q))
-        color_all = NEUTRAL_GRAY
+        color_all = "#94a3b8"
         color_won = TELKOMSEL_RED
-        ax.bar(x - bar_width/2, merged_q["CV_Total_Bn"], width=bar_width, label="All Stage", color=color_all)
-        ax.bar(x + bar_width/2, merged_q["CV_Won_Bn"], width=bar_width, label="Won Only", color=color_won)
+        bars_total = ax.bar(
+            x - bar_width / 2,
+            merged_q["CV_Total_Bn"],
+            width=bar_width,
+            label="All Stage",
+            color=color_all,
+            edgecolor="white",
+            linewidth=1,
+        )
+        bars_won = ax.bar(
+            x + bar_width / 2,
+            merged_q["CV_Won_Bn"],
+            width=bar_width,
+            label="Won Only",
+            color=color_won,
+            edgecolor="white",
+            linewidth=1,
+        )
+        label_offset = max(merged_q[["CV_Total_Bn", "CV_Won_Bn"]].max().max() * 0.025, 0.08)
         for i in x:
-            ax.text(i - bar_width/2, merged_q["CV_Total_Bn"].iloc[i] + 0.05, f'{merged_q["CV_Total_Bn"].iloc[i]:.1f}Bn', ha="center", fontsize=9)
-            ax.text(i + bar_width/2, merged_q["CV_Won_Bn"].iloc[i] + 0.05, f'{merged_q["CV_Won_Bn"].iloc[i]:.1f}Bn', ha="center", fontsize=9)
+            ax.text(
+                i - bar_width / 2,
+                merged_q["CV_Total_Bn"].iloc[i] + label_offset,
+                f'{merged_q["CV_Total_Bn"].iloc[i]:.1f}',
+                ha="center",
+                fontsize=8.5,
+                color=CHART_MUTED,
+            )
+            ax.text(
+                i + bar_width / 2,
+                merged_q["CV_Won_Bn"].iloc[i] + label_offset,
+                f'{merged_q["CV_Won_Bn"].iloc[i]:.1f}',
+                ha="center",
+                fontsize=8.5,
+                color=CHART_TEXT,
+            )
         for i in range(len(x)-1):
             if merged_q["Year"].iloc[i] != merged_q["Year"].iloc[i+1]:
-                ax.axvline(x=i+0.5, color="gray", linestyle="--", linewidth=1)
+                ax.axvline(x=i + 0.5, color=CHART_GRID, linestyle="-", linewidth=1)
         ax.set_xticks(x, merged_q["Label"], rotation=45)
-        ax.set_ylabel("CV (Bn)")
-        ax.set_title("CV per Quarter - All Stage vs Won Only")
-        ax.legend()
-        ax.grid(axis="y", linestyle="--", alpha=0.4)
+        _style_axis(ax, "Quarterly Contract Value", ylabel="CV (Bn)", grid_axis="y")
+        ax.legend(frameon=False, loc="upper left", ncols=2)
+        ymax = merged_q[["CV_Total_Bn", "CV_Won_Bn"]].max().max()
+        ax.set_ylim(top=(ymax * 1.18) if ymax > 0 else 1)
         fig3.tight_layout()
         figs["bars_quarterly"] = fig3
     else:
@@ -455,11 +605,21 @@ def run_bagian2(df: pd.DataFrame) -> Dict[str, object]:
         cycle_results.append((lob, avg_days, valid.sum(), len(group)))
     df_cycle = pd.DataFrame(cycle_results, columns=["LoB", "Avg Sales Cycle (days)", "Valid Count", "Total Count"])
     df_cycle["% Valid"] = round(100 * df_cycle["Valid Count"] / df_cycle["Total Count"], 1)
-    fig1, ax1 = plt.subplots(figsize=(12, 6))
-    sns.barplot(data=df_cycle, y="LoB", x="Avg Sales Cycle (days)", hue="LoB", legend=False, palette=[TELKOMSEL_RED], ax=ax1)
-    ax1.set_title("Average Sales Cycle Time per LoB")
-    ax1.set_xlabel("Average Days")
-    ax1.set_ylabel("LoB")
+    df_cycle_plot = df_cycle.sort_values("Avg Sales Cycle (days)", ascending=True)
+    fig1, ax1 = plt.subplots(figsize=(11.5, max(4.8, 0.45 * len(df_cycle_plot) + 2)))
+    if not df_cycle_plot.empty:
+        colors = _palette(len(df_cycle_plot))
+        ax1.barh(
+            df_cycle_plot["LoB"],
+            df_cycle_plot["Avg Sales Cycle (days)"],
+            color=colors,
+            edgecolor="white",
+            linewidth=1,
+        )
+        _add_horizontal_bar_labels(ax1, df_cycle_plot["Avg Sales Cycle (days)"], lambda value: f"{value:.0f} days")
+    else:
+        ax1.text(0.5, 0.5, "No closed won data", ha="center", va="center", color=CHART_MUTED, transform=ax1.transAxes)
+    _style_axis(ax1, "Average Sales Cycle by LoB", "Average Days", "LoB")
     fig1.tight_layout()
     figs["cycle_per_lob"] = fig1
 
@@ -477,12 +637,19 @@ def run_bagian2(df: pd.DataFrame) -> Dict[str, object]:
 
         lob_product = df_valid_stage.groupby(["lob", "Product Type"])["stage_duration"].mean().reset_index()
         lob_product = lob_product.sort_values(by="stage_duration", ascending=False)
-        fig2, ax2 = plt.subplots(figsize=(12, 6))
-        sns.barplot(data=lob_product, y="lob", x="stage_duration", hue="Product Type", palette=[TELKOMSEL_RED], ax=ax2)
-        ax2.set_title("Avg Stage to Close Time per LoB and Product Type")
-        ax2.set_xlabel("Average Days")
-        ax2.set_ylabel("Industry Segment (LoB)")
-        ax2.legend(title="Product Type")
+        fig2, ax2 = plt.subplots(figsize=(12, max(5, 0.45 * lob_product["lob"].nunique() + 2.3)))
+        sns.barplot(
+            data=lob_product,
+            y="lob",
+            x="stage_duration",
+            hue="Product Type",
+            palette=_palette(lob_product["Product Type"].nunique()),
+            ax=ax2,
+            edgecolor="white",
+            linewidth=1,
+        )
+        _style_axis(ax2, "Average Stage-to-Close Time", "Average Days", "Industry Segment (LoB)")
+        ax2.legend(title="Product Type", frameon=False, loc="lower right")
         fig2.tight_layout()
         figs["stage_to_close_lob_product"] = fig2
     else:
@@ -491,12 +658,18 @@ def run_bagian2(df: pd.DataFrame) -> Dict[str, object]:
     # SE (Opportunity Owner)
     if "Opportunity Owner" in df_valid_stage.columns and "stage_duration" in df_valid_stage.columns:
         se_stage = df_valid_stage.groupby("Opportunity Owner")["stage_duration"].mean().reset_index()
-        se_stage = se_stage.sort_values(by="stage_duration", ascending=False)
-        fig3, ax3 = plt.subplots(figsize=(12, 6))
-        sns.barplot(data=se_stage, y="Opportunity Owner", x="stage_duration", hue="Opportunity Owner", legend=False, palette=[TELKOMSEL_RED], ax=ax3)
-        ax3.set_title("Avg Stage to Close Time per Opportunity Owner (SE)")
-        ax3.set_xlabel("Average Days")
-        ax3.set_ylabel("Opportunity Owner (SE)")
+        se_stage = se_stage.sort_values(by="stage_duration", ascending=True).tail(15)
+        fig3, ax3 = plt.subplots(figsize=(11.5, max(4.8, 0.42 * len(se_stage) + 2)))
+        colors = _palette(len(se_stage))
+        ax3.barh(
+            se_stage["Opportunity Owner"],
+            se_stage["stage_duration"],
+            color=colors,
+            edgecolor="white",
+            linewidth=1,
+        )
+        _add_horizontal_bar_labels(ax3, se_stage["stage_duration"], lambda value: f"{value:.0f} days")
+        _style_axis(ax3, "Average Stage-to-Close by SE", "Average Days", "Opportunity Owner")
         fig3.tight_layout()
         figs["stage_to_close_per_se"] = fig3
 
@@ -508,11 +681,22 @@ def run_bagian2(df: pd.DataFrame) -> Dict[str, object]:
         win_rate = 100 * won / total if total else 0
         win_results.append((lob, total, won, win_rate))
     df_win = pd.DataFrame(win_results, columns=["LoB", "Total Deals", "Closed Won", "Win Rate (%)"]).sort_values(by="Win Rate (%)", ascending=False)
-    fig4, ax4 = plt.subplots(figsize=(12, 6))
-    sns.barplot(data=df_win, y="LoB", x="Win Rate (%)", hue="LoB", legend=False, palette=[TELKOMSEL_RED], ax=ax4)
-    ax4.set_title("Win Rate per LoB")
-    ax4.set_xlabel("Win Rate (%)")
-    ax4.set_ylabel("Industry Segment")
+    df_win_plot = df_win.sort_values("Win Rate (%)", ascending=True)
+    fig4, ax4 = plt.subplots(figsize=(11.5, max(4.8, 0.45 * len(df_win_plot) + 2)))
+    if not df_win_plot.empty:
+        colors = _palette(len(df_win_plot))
+        ax4.barh(
+            df_win_plot["LoB"],
+            df_win_plot["Win Rate (%)"],
+            color=colors,
+            edgecolor="white",
+            linewidth=1,
+        )
+        _add_horizontal_bar_labels(ax4, df_win_plot["Win Rate (%)"], lambda value: f"{value:.1f}%")
+        ax4.set_xlim(0, max(100, df_win_plot["Win Rate (%)"].max() * 1.18))
+    else:
+        ax4.text(0.5, 0.5, "No win-rate data", ha="center", va="center", color=CHART_MUTED, transform=ax4.transAxes)
+    _style_axis(ax4, "Win Rate by LoB", "Win Rate (%)", "Industry Segment")
     fig4.tight_layout()
     figs["win_rate_per_lob"] = fig4
 
@@ -539,6 +723,12 @@ def run_bagian2(df: pd.DataFrame) -> Dict[str, object]:
                     top5 = grp.sort_values(by=sort_by, ascending=False).head(5)
                     top5_list.append(top5)
                 df_plot = pd.concat(top5_list, ignore_index=True) if top5_list else pd.DataFrame(columns=df_am.columns)
+                years = sorted(df_plot["Year"].dropna().unique().tolist())
+                year_colors = _palette(len(years))
+                year_palette = {
+                    year: YEAR_PALETTE.get(int(year), year_colors[i])
+                    for i, year in enumerate(years)
+                }
                 g = sns.catplot(
                     data=df_plot,
                     x=sort_by,
@@ -548,11 +738,13 @@ def run_bagian2(df: pd.DataFrame) -> Dict[str, object]:
                     kind="bar",
                     height=4.8,
                     aspect=2.5,
-                    palette={2023: TELKOMSEL_RED, 2024: TELKOMSEL_RED, 2025: TELKOMSEL_RED},
+                    palette=year_palette,
                     sharex=False,
                     sharey=False,
                     col_wrap=2,
                     legend_out=True,
+                    edgecolor="white",
+                    linewidth=1,
                 )
                 g.set_titles("Top AM in {col_name}")
                 g.set_axis_labels(title_suffix, "Account Manager")
@@ -560,11 +752,25 @@ def run_bagian2(df: pd.DataFrame) -> Dict[str, object]:
                     for bar in ax.patches:
                         width = bar.get_width()
                         if pd.notna(width):
-                            ax.text(width + 0.5, bar.get_y() + bar.get_height()/2, _format_label(width, sort_by), va="center", ha="left", fontsize=9)
-                    for spine in ["top", "right", "left"]:
+                            offset = width * 0.015 if width else 0.5
+                            ax.text(
+                                width + offset,
+                                bar.get_y() + bar.get_height() / 2,
+                                _format_label(width, sort_by),
+                                va="center",
+                                ha="left",
+                                fontsize=9,
+                                color=CHART_TEXT,
+                            )
+                    for spine in ["top", "right"]:
                         ax.spines[spine].set_visible(False)
-                    ax.grid(axis="y", linestyle="--", alpha=0.3)
-                plt.suptitle(f"Top 5 AM based on {title_suffix} per LoB per Year", fontsize=16)
+                    ax.spines["left"].set_color(CHART_GRID)
+                    ax.spines["bottom"].set_color(CHART_GRID)
+                    ax.grid(axis="x", color=CHART_GRID, linestyle="-", linewidth=0.8)
+                    ax.grid(False, axis="y")
+                    ax.tick_params(axis="x", colors=CHART_MUTED)
+                    ax.tick_params(axis="y", colors=CHART_TEXT)
+                plt.suptitle(f"Top 5 AM by {title_suffix}", fontsize=16, fontweight="700", color=CHART_TEXT)
                 plt.tight_layout(rect=[0, 0, 1, 0.95])
                 return g.fig
 

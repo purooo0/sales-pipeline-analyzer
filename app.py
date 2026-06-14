@@ -6,14 +6,19 @@ Flow:
 
 Visual theme uses a single Telkomsel red accent for a professional, consistent look.
 """
-import io
+import hashlib
 import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
 from typing import Dict, List, Optional
 
+from excel_adapter import load_excel_adaptive
 from processing import (
     CANONICAL_COLS,
+    CHART_GRID,
+    CHART_MUTED,
+    CHART_PALETTE,
+    CHART_TEXT,
     auto_map_columns,
     preprocess,
     run_bagian1,
@@ -25,6 +30,13 @@ from processing import (
 # ---- Theme constants ----
 TELKOMSEL_RED: str = "#e60000"
 NEUTRAL_GRAY: str = "#d9d9d9"
+
+def _chart_palette(n: int) -> List[str]:
+    """Return enough colors for n chart categories."""
+    if n <= 0:
+        return []
+    repeats = int((n + len(CHART_PALETTE) - 1) / len(CHART_PALETTE))
+    return (CHART_PALETTE * repeats)[:n]
 
 # ---- Helpers for UI rendering (defined early to avoid NameError) ----
 def _render_top_am_section(df_am: pd.DataFrame, metric: str, xlabel: str, key_suffix: str):
@@ -74,19 +86,37 @@ def _render_top_am_for_lob(df_am: pd.DataFrame, lob: str, years_sel: List[int], 
                 st.warning("Tidak ada data untuk kombinasi ini.")
                 continue
             sub = sub.sort_values(by=metric, ascending=False).head(topn)
-            fig, ax = plt.subplots(figsize=(9, max(3.5, 0.5 * len(sub) + 2)))
-            ax.barh(sub["am"], sub[metric], color=TELKOMSEL_RED)
-            ax.invert_yaxis()
+            sub = sub.sort_values(by=metric, ascending=True)
+            fig, ax = plt.subplots(figsize=(10, max(3.8, 0.5 * len(sub) + 2)))
+            ax.barh(
+                sub["am"],
+                sub[metric],
+                color=_chart_palette(len(sub)),
+                edgecolor="white",
+                linewidth=1,
+            )
             # Labels on bars
+            max_value = sub[metric].dropna().max()
+            offset = float(max_value) * 0.015 if pd.notna(max_value) and max_value else 0.5
             for j, v in enumerate(sub[metric].tolist()):
+                if pd.isna(v):
+                    continue
                 label = _fmt_metric(v, metric)
-                ax.text(v, j, f"  {label}", va="center", ha="left", fontsize=9, color="#333333")
-            ax.set_xlabel(xlabel)
-            ax.set_ylabel("Account Manager")
-            ax.set_title(f"Top {len(sub)} AM - {y}")
-            for spine in ["top", "right", "left"]:
+                ax.text(v + offset, j, label, va="center", ha="left", fontsize=9, color=CHART_TEXT)
+            ax.set_xlabel(xlabel, color=CHART_MUTED, labelpad=10)
+            ax.set_ylabel("Account Manager", color=CHART_MUTED, labelpad=10)
+            ax.set_title(f"Top {len(sub)} AM - {y}", loc="left", fontsize=14, fontweight="700", color=CHART_TEXT, pad=14)
+            for spine in ["top", "right"]:
                 ax.spines[spine].set_visible(False)
-            ax.grid(axis="x", linestyle="--", alpha=0.3)
+            ax.spines["left"].set_color(CHART_GRID)
+            ax.spines["bottom"].set_color(CHART_GRID)
+            ax.grid(axis="x", color=CHART_GRID, linestyle="-", linewidth=0.8)
+            ax.grid(False, axis="y")
+            ax.tick_params(axis="x", colors=CHART_MUTED)
+            ax.tick_params(axis="y", colors=CHART_TEXT)
+            if pd.notna(max_value) and max_value > 0:
+                ax.set_xlim(right=max_value * 1.18)
+            fig.tight_layout()
             st.pyplot(fig)
 
 def _fmt_metric(v, metric: str) -> str:
@@ -127,9 +157,9 @@ st.sidebar.header("1) Upload Excel")
 uploaded = st.sidebar.file_uploader("Upload .xlsx", type=["xlsx"])
 
 @st.cache_data(show_spinner=False)
-def load_excel(file) -> pd.DataFrame:
-    """Load the first sheet of the uploaded Excel file."""
-    return pd.read_excel(file, sheet_name=0, engine="openpyxl")
+def load_excel(file_bytes: bytes):
+    """Load an Excel file using adaptive sheet/header detection."""
+    return load_excel_adaptive(file_bytes)
 
 def dependency_sets() -> Dict[str, List[str]]:
     """Return minimal per-output dependencies to drive warnings/skips."""
@@ -154,9 +184,54 @@ def missing_for(deps: List[str], available_cols: List[str]) -> List[str]:
 
 # Step 2: read + show columns
 if uploaded:
-    df_raw = load_excel(uploaded)
+    file_bytes = uploaded.getvalue()
+    file_signature = hashlib.sha256(file_bytes).hexdigest()
+    if st.session_state.get("file_signature") != file_signature:
+        st.session_state["file_signature"] = file_signature
+        st.session_state.pop("results", None)
+
+    try:
+        df_raw, excel_info = load_excel(file_bytes)
+    except Exception as exc:
+        st.error(f"File Excel tidak bisa dibaca otomatis: {exc}")
+        st.stop()
+
     st.subheader("Preview Data")
     st.dataframe(df_raw.head(20), use_container_width=True)
+
+    st.subheader("Excel Structure Detection")
+    c_sheet, c_header, c_shape, c_mapped = st.columns(4)
+    with c_sheet:
+        st.metric("Sheet", str(excel_info.get("sheet_name", "-")))
+    with c_header:
+        header_display = int(excel_info.get("header_row", 0)) + 1
+        st.metric("Header Row", header_display)
+    with c_shape:
+        st.metric("Rows x Columns", f"{excel_info.get('rows', 0)} x {excel_info.get('columns', 0)}")
+    with c_mapped:
+        st.metric("Mapped Fields", len(excel_info.get("mapped_any", [])))
+
+    with st.expander("Automatic Mapping Details", expanded=False):
+        confidence = excel_info.get("confidence", {})
+        detected_mapping = excel_info.get("mapping", {})
+        map_rows = []
+        for canon in CANONICAL_COLS:
+            source = detected_mapping.get(canon)
+            if source:
+                map_rows.append({
+                    "Canonical Field": canon,
+                    "Detected Column": source,
+                    "Confidence": f"{confidence.get(canon, 0) * 100:.0f}%",
+                })
+        if map_rows:
+            st.dataframe(pd.DataFrame(map_rows), use_container_width=True, hide_index=True)
+        else:
+            st.info("Belum ada kolom yang bisa dipetakan otomatis.")
+
+        candidates = excel_info.get("sheet_candidates", [])
+        if candidates:
+            st.markdown("#### Sheet Candidates")
+            st.dataframe(pd.DataFrame(candidates), use_container_width=True, hide_index=True)
 
     st.subheader("Columns Detected")
     all_cols = list(df_raw.columns)
@@ -172,13 +247,21 @@ if uploaded:
 
     # Step 4: mapping UI
     st.sidebar.header("3) Column Mapping (only if needed)")
-    auto_map = auto_map_columns(selected_cols)
+    detected_mapping = excel_info.get("mapping", {})
+    fallback_map = auto_map_columns(selected_cols)
+    auto_map = {}
+    for canon in CANONICAL_COLS:
+        detected_source = detected_mapping.get(canon)
+        auto_map[canon] = detected_source if detected_source in selected_cols else fallback_map.get(canon)
+
     mapping: Dict[str, Optional[str]] = {}
     with st.sidebar.expander("Map to Canonical Names", expanded=False):
         for canon in CANONICAL_COLS:
             opts = [None] + selected_cols
             prefill = auto_map.get(canon)
-            choice = st.selectbox(f"{canon}", options=opts, index=(opts.index(prefill) if prefill in opts else 0), key=f"map_{canon}")
+            conf = excel_info.get("confidence", {}).get(canon, 0)
+            label = f"{canon} ({conf * 100:.0f}% auto)" if prefill else canon
+            choice = st.selectbox(label, options=opts, index=(opts.index(prefill) if prefill in opts else 0), key=f"map_{canon}")
             mapping[canon] = choice
 
     # Industry Segment filter (mapped to standardized 8 LoB)
@@ -194,7 +277,7 @@ if uploaded:
     st.sidebar.header("5) Run (Per Fitur)")
     feature_options = [
         "Summary",
-        "Pie Charts",
+        "Product Mix Donuts",
         "Quarterly Bars",
         "Opportunity Count Table",
         "Top/Bottom 5 Closed Won",
@@ -210,7 +293,7 @@ if uploaded:
     selected_features = st.sidebar.multiselect(
         "Pilih fitur yang ingin ditampilkan",
         options=feature_options,
-        default=["Summary", "Pie Charts", "Quarterly Bars"],
+        default=["Summary", "Product Mix Donuts", "Quarterly Bars"],
     )
     btn_run = st.sidebar.button("Run")
 
@@ -258,12 +341,12 @@ if uploaded:
         st.write(f"Closed Won: {s['won_opps']} opps | CV IDR {s['won_cv_bn']} Bn")
         st.write(f"Conversion Rate: {s['conversion_rate']}%")
 
-    if "Pie Charts" in selected_features and "figures" in res1:
+    if "Product Mix Donuts" in selected_features and "figures" in res1:
         if "pie_all" in res1["figures"]:
-            st.markdown("### CV by Product Type (All Stage)")
+            st.markdown("### Contract Value by Product Type")
             st.pyplot(res1["figures"]["pie_all"])
         if "pie_won" in res1["figures"]:
-            st.markdown("### CV by Product Type (Won Only)")
+            st.markdown("### Won Contract Value by Product Type")
             st.pyplot(res1["figures"]["pie_won"])
 
     if "Quarterly Bars" in selected_features and "figures" in res1 and "bars_quarterly" in res1["figures"]:
